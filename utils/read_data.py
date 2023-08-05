@@ -1,5 +1,6 @@
 import os
 import json
+import torch
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -31,8 +32,8 @@ def get_label_maps():
 
 def get_data(lang='en'):
     #Load lang_title_articles
-    articles_path=articles_path.replace('en',lang)
-    articles = read_json(articles_path)
+    lang_articles_path=articles_path.replace('en',lang)
+    articles = read_json(lang_articles_path)
 
     #Load lang_id lookup
     
@@ -46,11 +47,11 @@ def get_data(lang='en'):
     data = []
     for title,content in articles.items():
         id = ids[title]
-        label = labels[id]
+        label = labels[id[0]]
         data.append([id,lang,title,content,label])
     return data
 
-def flatten_label(label): return set(list([j for i in label for j in i]))
+def flatten_label(label): return set(list([j.replace('.txt','') for i in label for j in i]))
 
 
 #Pytorch Dataset
@@ -76,16 +77,16 @@ class EntityDataset(Dataset):
             labels = torch.zeros(len(self.label2id))
             labels[label] = 1
             label = labels
-
         encoding = self.tokenizer.encode_plus(
-            [title+
-            content],
+            title+content,
             add_special_tokens=True,
             max_length=self.max_len,
-            pad_to_max_length=True,
+            padding="max_length",
             return_tensors='pt',
+            truncation=True
         )
-        return {"input":encoding[0],"label":label,"id":id,"lang":lang}
+
+        return {"input_ids":encoding['input_ids'],"labels":label}
 
 
 def create_data_loader(ds, batch_size=8):
