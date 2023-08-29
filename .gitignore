@@ -164,5 +164,11 @@ vignettes/*.pdf
 
 
 data/
+prev_data/
 wandb/
 mbert_flat/
+*.ipynb
+*.sh
+output/
+labels/
+config/

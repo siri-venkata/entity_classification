@@ -1,21 +1,52 @@
 import os
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import shutil
+from utils.utils import AttrDict
+from transformers import AutoModel,AutoModelForSequenceClassification, AutoTokenizer
 
-def load_model(model_name, model_path='',num_labels=10,id2label=None):
-    if model_path=='':
-        model_path = model_name
-    model = AutoModelForSequenceClassification.from_pretrained(model_path,
+def load_model(args):
+    if args.model_path=='':
+        model = AutoModelForSequenceClassification.from_pretrained(args.model_name,
                                                             problem_type="multi_label_classification", 
-                                                           num_labels=num_labels,
-                                                           id2label=id2label)
+                                                           num_labels=args.num_labels)
+        return model
+    else:
+        model = AutoModelForSequenceClassification()
+        # .from_pretrained(model_path,
+        #                                                     problem_type="multi_label_classification", 
+        #                                                    num_labels=num_labels,
+        #                                                    id2label=id2label)
+        checkpoint = torch.load(args.model_path+'/model.pt')
+        model.load_state_dict(checkpoint)
+        return model
+
+def load_base_model(args):
+    model = AutoModel.from_pretrained(args.model_name if args.model_path=='' else args.model_path)
     return model
 
+def save_checkpoint(model,optimizer,scheduler, is_best, step_number,args):
+    if not os.path.exists(args.save_model_path):
+        os.makedirs(args.save_model_path)
+        os.makedirs(args.save_model_path+'/best')
+    mpath = args.save_model_path+'/model_'+str(step_number)+'.pt'
+    opath = args.save_model_path+'/optimizer_'+str(step_number)+'.pt'
+    spath = args.save_model_path+'/scheduler_'+str(step_number)+'.pt'
+    torch.save(model.state_dict(),mpath)
+    torch.save(optimizer.state_dict(),opath)
+    torch.save(scheduler.state_dict(),spath)
 
-def load_tokenizer(model_name, model_path=''):
-    if model_path=='':
-        model_path = model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if is_best:
+        shutil.copyfile(mpath,'/'.join(mpath.split('/')[:-1])+'/best/model.pt')
+        shutil.copyfile(opath,'/'.join(opath.split('/')[:-1])+'/best/optimizer.pt')
+        shutil.copyfile(spath,'/'.join(spath.split('/')[:-1])+'/best/scheduler.pt')
+        os.remove(mpath)
+        os.remove(opath)
+        os.remove(spath)
+
+def load_tokenizer(args,**kwargs):
+    if args.model_path=='':
+        model_path = args.model_name
+    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast =kwargs["use_fast"] if "use_fast" in kwargs else True)
     return tokenizer
 
 
@@ -26,7 +57,8 @@ def dummy_config_model():
     num_labels = len(labels)
     id2label = {i:label for i,label in enumerate(labels)}
     label2id = {label:i for i,label in enumerate(labels)}
-    model,tokenizer = load_model(model_name,model_path,num_labels,id2label,label2id)
+    model = load_model(num_labels,id2label,AttrDict({"model_name":model_name,"model_path":model_path}))
+    tokenizer = load_tokenizer(AttrDict({"model_name":model_name,"model_path":model_path}))
     return model,tokenizer,labels
 
 def test_model(model,input,labels=None):
@@ -52,6 +84,7 @@ if __name__=="__main__":
 
     input = tokenizer(texts, return_tensors="pt",padding=True)
     output = test_model(model,input)
+    print(output.logits.shape)
     print('*************')
 
     ouptut = test_model(model,input,text_labels)
