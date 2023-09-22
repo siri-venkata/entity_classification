@@ -3,6 +3,7 @@ ctime = time.time()
 print('Started imports ')
 import os
 import json
+import math
 import wandb
 
 
@@ -18,6 +19,7 @@ from utils.utils import seed_all
 from utils.optimizers import get_optimizer_and_scheduler
 from utils.losses import loss_functions,Lossaggregator,add_variable_to_scope
 from tqdm import tqdm
+from pprint import pprint
 
 print(f'Completed Loading modules in {time.time()-ctime} seconds')
 ctime=time.time()
@@ -69,11 +71,10 @@ ctime=time.time()
 
 def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,args):
     print('Evaluating')
-    ctime=time.time()
     evaluation_loss = Lossaggregator(batch_size=args.eval_batch_size)
     with torch.no_grad():
         eval_steps=0
-        for index,batch in enumerate(eval_loader):
+        for index,batch in tqdm(enumerate(eval_loader),total = eval_size//args.eval_batch_size):
             input_ids = batch['input_ids'].to(device)#.reshape(args.batch_size,-1).to(device)
             attention_mask = batch['attention_mask'].to(device)#.reshape(args.batch_size,-1).to(device)
             labels = batch['labels'].to(device)#.reshape(args.batch_size,-1).to(device)
@@ -87,10 +88,9 @@ def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,args):
             if eval_steps>args.eval_steps:
                 break
             
-    #print('Evaluation Loss: ',evaluation_loss.get())
-    #print('Evaluation Metrics: ',eval_metric.get())
+    print('Evaluation Loss: ',evaluation_loss.get())
+    print('Evaluation Metrics: ',eval_metric.get())
     eval_metric.save_predictions(eval=True)
-    print(f'Evaluating took {(time.time()-ctime)/60} minutes')
     wandb.log({"Eval loss": evaluation_loss.get()})
     wandb.log({"Eval "+met:val for met,val in eval_metric.get().items()})
     evaluation_loss.reset()
@@ -142,6 +142,7 @@ def train(model,
         for i in range(args.num_train_epochs):
             print('Epoch: ',i)
             training_loss = Lossaggregator(batch_size=args.batch_size)
+            norms=[]
             
             for index,batch in tqdm(enumerate(training_loader),total = train_size//args.batch_size):
                 input_ids = batch['input_ids'].to(device)#.reshape(args.batch_size,-1).to(device)
@@ -155,26 +156,32 @@ def train(model,
                 
                 training_metric.add(outputs.detach().cpu(),labels.detach().cpu(),batch['meta_data'])
                 training_loss.add(loss.item())
+                l,m = training_loss.get(),training_metric.get()
+                wandb.log({"Training loss": l})
+                wandb.log({"Training "+met:val for met,val in m.items()})
+                
 
-                if step_number%args.logging_steps==0 and step_number!=0:
-                    # print('Loss: ',training_loss.get())
-                    # print('Metrics: ',training_metric.get())
-                    wandb.log({"Training loss": training_loss.get()})
-                    wandb.log({"Training "+met:val for met,val in training_metric.get().items()})
-
-                if step_number%args.saving_steps==0 and step_number!=0 and training_loss.get()<best_loss:
+                if i%10==0:
                     best_loss = training_loss.get()
-                    save_checkpoint(model,optimizer,scheduler,True,step_number,args)
+                    #save_checkpoint(model,optimizer,scheduler,True,step_number,args)
                     training_metric.save_predictions(False)
                     
 
                 loss.backward()
+                total_norm=0
+                for param in model.parameters():
+                        if param.grad is not None and param.requires_grad: total_norm+=(param.grad.detach().data.norm(2).item())**2
+                # print('Total Norm at epoch ',i,' is ',total_norm**0.5)
+                norms.append(total_norm**0.5)
+                if math.isnan(total_norm):
+                    import pdb;pdb.set_trace()
+
                 if args.max_grad_norm>0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                if step_number%args.gradient_accumulation_steps==0 and step_number!=0:
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
+ #               if step_number%args.gradient_accumulation_steps==0 and step_number!=0:
+                optimizer.step()
+ #                   scheduler.step()
+                optimizer.zero_grad()
 
                 if (not skip_eval) and (step_number%args.eval_num_steps==0) and step_number!=0:
                     model.eval()
@@ -185,9 +192,13 @@ def train(model,
                 if step_number>=args.train_steps:
                     print('Exiting epoch loop')
                     break
+            l,m = training_loss.get(),training_metric.get()
+            pprint({"Training loss": l})
+            pprint({"Training "+met:val for met,val in m.items()})
+            print('Average Norm: ',sum(norms)/len(norms))
             training_loss.reset()
             training_metric.reset()
-            save_checkpoint(model,optimizer,scheduler,False,step_number,args)
+#            save_checkpoint(model,optimizer,scheduler,False,step_number,args)
             if step_number>=args.train_steps:
                 print('Exiting Training loop')
                 break
@@ -195,7 +206,7 @@ def train(model,
 
 if __name__=="__main__":
     if args.do_train or args.do_eval:
-        training_loader,train_size,eval_loader,eval_size = get_data_loaders(A,label2id,id2label,tokenizer,args)
+        training_loader,train_size,eval_loader,eval_size = get_data_loaders(A,label2id,id2label,tokenizer,args,4,4)
         M= torch.from_numpy(A).float()
         training_metric = Metricsaggregator(M,id2label,args)
         eval_metric = Metricsaggregator(M,id2label,args)

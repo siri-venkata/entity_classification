@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def add_variable_to_scope(**kwargs):
     def decorator(func):
@@ -71,20 +72,20 @@ def RACLoss(outputs, targets, **kwargs):
     R = kwargs["R"]
 
     #Apply sigmoid to outputs
-    outputs = torch.sigmoid(outputs)
+    #outputs = torch.sigmoid(outputs)
     outputs_ = outputs.reshape(outputs.shape[0],-1,1)
     targets_ = targets.reshape(targets.shape[0],-1,1)
     tar = targets_.repeat(1,1,targets_.shape[1])
     # risk_ = 1+R.matmul(targets_)
     risk_ = 1 - torch.max(torch.mul(R,tar),dim=2).values
     risk_ = risk_.reshape(risk_.shape[0],-1,1)
-    loss = -torch.mul(targets_,torch.log(outputs_))-torch.mul(torch.mul(risk_,1-targets_),torch.log(1-outputs_))
+    loss = -torch.mul(targets_,F.logsigmoid(outputs_))-torch.mul(torch.mul(risk_,1-targets_),F.logsigmoid(1-outputs_))
     return outputs, torch.sum(loss)
 
 def DACLoss(outputs, targets, **kwargs):
     D = kwargs["D"]
     #Apply sigmoid to outputs
-    outputs = torch.sigmoid(outputs)
+    #outputs = torch.sigmoid(outputs)
     outputs_ = outputs.reshape(outputs.shape[0],-1,1)
     targets_ = targets.reshape(targets.shape[0],-1,1)
     tar = targets_.repeat(1,1,targets_.shape[1])
@@ -93,13 +94,13 @@ def DACLoss(outputs, targets, **kwargs):
     severity_ = 1+torch.min(torch.mul(D,tar),dim=2).values
     severity_ = severity_.reshape(severity_.shape[0],-1,1)
     
-    loss = -torch.mul(targets_,torch.log(outputs_))-torch.mul(torch.mul(severity_,1-targets_),torch.log(1-outputs_))
+    loss = -torch.mul(targets_,F.logsigmoid(outputs_))-torch.mul(torch.mul(severity_,1-targets_),F.logsigmoid(1-outputs_))
     return outputs, torch.sum(loss)
     
 def RADACLoss(outputs,targets,**kwargs):
     D = kwargs["D"]
     R = kwargs["R"]
-    outputs = torch.sigmoid(outputs)
+    #outputs = torch.sigmoid(outputs)
     outputs_ = outputs.reshape(outputs.shape[0],-1,1)
     targets_ = targets.reshape(targets.shape[0],-1,1)
     tar = targets_.repeat(1,1,targets_.shape[1])
@@ -111,7 +112,7 @@ def RADACLoss(outputs,targets,**kwargs):
     severity_ = severity_.reshape(severity_.shape[0],-1,1)
 
     multiplier = 1+severity_-risk_
-    loss = -torch.mul(targets_,torch.log(outputs_))-torch.mul(torch.mul(multiplier,1-targets_),torch.log(1-outputs_))
+    loss = -torch.mul(targets_,F.logsigmoid(outputs_))-torch.mul(torch.mul(multiplier,1-targets_),F.logsigmoid(1-outputs_))
     return outputs, torch.sum(loss)
 
 

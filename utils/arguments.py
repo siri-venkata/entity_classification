@@ -1,11 +1,12 @@
 import argparse
 from pprint import pprint
+import torch
 
 # List of available languages
 available_languages = "aswiki|bnwiki|guwiki|hiwiki|knwiki|mlwiki|mrwiki|orwiki|pawiki|tawiki|tewiki|enwiki|all_langwiki".replace('wiki','').split('|')
 
 # List of available loss functions
-available_losses = ['mc', 'bce','cbc','rac','dac']
+available_losses = ['mc', 'bce','cbc','rac','dac','radac']
 
 #List of available models
 available_backbone_models =['bert-base-multilingual-cased']
@@ -82,6 +83,10 @@ def parse_arguments():
     parser.add_argument('--predict_file', default='', help='File to run model on and save_predictions')
     parser.add_argument('--save_predictions', default='./', help='Save predictions')
 
+    #Wandb parameters
+    parser.add_argument('--wand_mode', choices=["online","disabled","offline"], default="disabled", help='Use wandb mode')
+    parser.add_argument('--wand_run_name', default='default', help='Run name for wandb')
+
 
     
     
@@ -112,10 +117,13 @@ def get_args():
     if args.eval_num_steps<0:
         args.eval_num_steps = 1_000_000_000
     assert args.d_model%args.nhead==0, "d_model should be divisible by nhead"
-    if args.model_type=='graph':
+    if False and args.model_type=='graph':
         assert  args.batch_size == 1, "Batch size should be 1 for graph model"
         assert  args.eval_batch_size == 1, "Batch size should be 1 for graph model"
-    
+
+    if torch.cuda.device_count()>0:
+        args.batch_size = args.batch_size*torch.cuda.device_count()
+
     print('Arguments: ')
     pprint(vars(args))
     return args

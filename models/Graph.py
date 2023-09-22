@@ -20,11 +20,20 @@ class GraphNetwork(nn.Module):
         self.linear      =  nn.Linear(d_model, 1)
         self.num_labels = num_labels
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, nchunks):
         for i in range(len(self.gnn_layers)):
             x = self.gnn_layers[i](x, edge_index)
-        x = self.linear(x)
-        return x[:self.num_labels,0].reshape(1,-1)
+        
+        try:
+            x = [self.linear(i[:self.num_labels]) for i in torch.split(x,[self.num_labels+j for j in nchunks])]
+        except:
+            print('Shape of x is ',x.shape)
+            print('Shape of edge_index is ',edge_index.shape)
+            print('nchunks ',nchunks)
+            raise ValueError
+        x = torch.cat(x,dim=1).T
+
+        return x
     
 class LMGNN(nn.Module):
     def __init__(self, encoder_model, classifier_model,label_graph, d_model):
@@ -39,32 +48,44 @@ class LMGNN(nn.Module):
         # le = self.node_type_embeddings(torch.LongTensor([0])).repeat(self.label_nodes.shape[0],1)
         le = self.node_type_embeddings[0].repeat(label_graph.nodes.shape[0],1)
         self.label_nodes = nn.Parameter(torch.cat([label_graph.nodes,le],dim=1))
-        self.label_nodes.requires_grad = False
+        #self.label_nodes.requires_grad = False
         self.label_edges = label_graph.edges
         self.num_nodes = self.label_nodes.shape[0]
-
     
-    def forward(self, **input_ids):
-        # input_ids = input_ids['input_ids'].squeeze(0)
-        # attention_mask = input_ids['attention_mask'].squeeze(0)
-        text_embeddings = self.encoder_model(**input_ids)
-        text_embeddings = text_embeddings.squeeze(0)
-        ne = self.node_type_embeddings[1].repeat(text_embeddings.shape[0],1)
-        text_nodes = torch.cat([text_embeddings,ne],dim=1)
+    def gen_nodes_and_edges(self,text_nodes,node_count=0):
         x = torch.cat([self.label_nodes,text_nodes],dim=0)
         extra_edges = [[i,self.num_nodes+j] for i in range(self.num_nodes) for j in range(text_nodes.shape[0])]
         extra_rev_edges = [[j,i] for i,j in extra_edges]
         extra_self_edges = [[self.num_nodes+i,self.num_nodes+i] for i in range(text_nodes.shape[0])]
-        # print(len(extra_edges))
-        # print(len(extra_rev_edges))
-        # print(len(extra_self_edges))
-        # print(self.label_edges.shape)
         extra_edges = torch.LongTensor(extra_edges+extra_rev_edges+extra_self_edges, device=self.label_edges.device).T
-        edge_index = torch.cat([self.label_edges,extra_edges],dim=1)
-        edge_index = edge_index.to(text_embeddings.device)
-        # print(x.shape)
-        # print(edge_index.shape)
-        x = self.classifier_model(x, edge_index)
+        edge_index = torch.cat([self.label_edges,extra_edges],dim=1)+node_count
+        return x,edge_index
+
+
+    def forward(self, **input_ids):
+        '''
+        input_ids: B,chunks,seq_len
+        attention_mask: B,chunks,seq_len
+        nchunks: B
+        meta_data: B,meta_dim[id,lang]
+        '''
+        # input_ids = input_ids['input_ids'].squeeze(0)
+        # attention_mask = input_ids['attention_mask'].squeeze(0)
+        B,C,L = input_ids['input_ids'].shape
+        text_embeddings = self.encoder_model(**input_ids)
+        #text_embeddings = text_embeddings.squeeze(0)
+        ne = self.node_type_embeddings[1].repeat(B,C,1)
+        text_nodes = torch.cat([text_embeddings,ne],dim=2)
+        xs,edge_indexes = [],[]
+        for i in range(B):
+            x,edge_index = self.gen_nodes_and_edges(text_nodes[i],node_count=i*(self.num_nodes+text_nodes.shape[1]))
+            xs.append(x)
+            edge_indexes.append(edge_index)
+
+        
+        x = torch.cat(xs,dim=0).to(self.label_nodes.device)
+        edge_index = torch.cat(edge_indexes,dim=1).to(self.label_nodes.device)
+        x = self.classifier_model(x, edge_index,input_ids['nchunks'])
         return x
 
 

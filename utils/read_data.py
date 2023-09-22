@@ -3,7 +3,7 @@ import json
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Subset,Dataset, DataLoader
 import functools
 import itertools
 from more_itertools import chunked
@@ -137,6 +137,9 @@ def get_data(args,articles_path='',lang='en',load_label=True):
     if not articles_path:
         articles_path,labels_path,id_path = get_paths_ali(args)
 
+    langs = "aswiki|bnwiki|guwiki|hiwiki|knwiki|mlwiki|mrwiki|orwiki|pawiki|tawiki|tewiki|enwiki".replace('wiki','').split('|')
+    lang_index = langs.index(lang)
+
     lang_articles_path=articles_path.replace('en',lang)
     articles = read_json(lang_articles_path)
 
@@ -161,9 +164,9 @@ def get_data(args,articles_path='',lang='en',load_label=True):
                 continue
                 
             label = labels[id[0]]
-            data.append([id,lang,title,content,label])
+            data.append([int(id[0][1:]),lang_index,title,content,label])
         else:
-            data.append([title,content])
+            data.append([int(id[0][1:]),lang_index,title,content])
 
     # print('Missing titles: ',len(missing_titles),' out of ',len(articles))
     # print('Present Titles ', set(articles.keys())-set(missing_titles))
@@ -289,8 +292,8 @@ class EntityDataset(Dataset):
             return_tensors='pt',
             truncation=True
         )
-
-        return {"input_ids":encoding['input_ids'],"labels":label} if self.has_label else {"input_ids":encoding['input_ids']}
+        
+        return {"input_ids":encoding['input_ids'],"example_id":id,"lang":lang,"labels":label} if self.has_label else {"input_ids":encoding['input_ids']}
 
 def naive_collator(batch,args):
     input_ids,attention_mask = [],[]
@@ -312,7 +315,12 @@ def naive_collator(batch,args):
     # input_ids = torch.LongTensor([+[pad_token_id]*(max_size-i['input_ids'].shape[0]))[:max_size] for i in batch])
     # attention_mask = torch.Tensor([([1]*i['input_ids'].shape[0]+[0]*(max_size-i['input_ids'].shape[0]))[:max_size] for i in batch])
     labels = torch.stack([i['labels'] for i in batch])
-    return {"input_ids":input_ids,"labels":labels,'attention_mask':attention_mask}
+    # example_ids = torch.stack([i['example_id'] for i in batch])
+    # lang = torch.stack([i['lang'] for i in batch])
+    meta_data = torch.LongTensor([[i['example_id'],i['lang']] for i in batch])
+    return {"input_ids":input_ids,"labels":labels,
+            'meta_data':meta_data,
+            'attention_mask':attention_mask}
 
 
 def hier_collator(batch,args):
@@ -344,12 +352,54 @@ def hier_collator(batch,args):
     model_inputs = torch.stack([F.pad(i,(0,0,0,max_size-i.shape[0]),"constant",args.pad_token_id) for i in model_inputs])
     inner_attention_mask = torch.stack([F.pad(i,(0,0,0,max_size-i.shape[0]),"constant",0) for i in inner_attention_mask])
     
-    return {"input_ids":model_inputs,"labels":labels,'attention_mask':inner_attention_mask,'outer_attention_mask':outer_attention_mask,'nchunks':nchunks}
+    # example_ids = torch.stack([i['example_id'] for i in batch])
+    # lang = torch.stack([i['lang'] for i in batch])
+    meta_data = torch.LongTensor([[i['example_id'],i['lang']] for i in batch])
+    return {"input_ids":model_inputs,"labels":labels,'attention_mask':inner_attention_mask,
+            'outer_attention_mask':outer_attention_mask,'nchunks':nchunks,
+            'meta_data':meta_data}
 
 
+def graph_collator(batch,args):
+    model_inputs = []
+    inner_attention_mask =[]
+    nchunks =[]
+    labels = torch.stack([i['labels'] for i in batch])
+    for sample in batch:
+        i = sample['input_ids'][0]
+        nchunk=0
+        for chunk in chunked(i, args.max_seq_length):
+            plen = args.max_seq_length-len(chunk)
+            model_inputs.append(chunk+[args.pad_token_id]*(plen))
+            inner_attention_mask.append(([1]*len(chunk)+[0]*plen))
+            nchunk+=1
+            if nchunk>10:
+                break
+        nchunks.append(nchunk)
+    # print('Number of chunks: ', nchunks)
+    model_inputs = torch.LongTensor(model_inputs)
+    model_inputs = model_inputs.split(nchunks,dim=0)
+
+    inner_attention_mask = torch.Tensor(inner_attention_mask)
+    inner_attention_mask = inner_attention_mask.split(nchunks,dim=0)
+
+    # max_size = max(nchunks)
+    # max_size = min(max_size,args.max_chunks)
+    # model_inputs = [i[:max_size] for i in model_inputs]
+    # outer_attention_mask = torch.Tensor([([1]*i.shape[0]+[0]*(max_size-i.shape[0]))[:max_size] for i in model_inputs])
+
+    model_inputs = torch.stack(model_inputs)
+    inner_attention_mask = torch.stack(inner_attention_mask)
+    
+    # example_ids = torch.stack([i['example_id'] for i in batch])
+    # lang = torch.stack([i['lang'] for i in batch])
+    meta_data = torch.LongTensor([[i['example_id'],i['lang']] for i in batch])
+    return {"input_ids":model_inputs,"labels":labels,'attention_mask':inner_attention_mask,
+            'nchunks':nchunks,
+            'meta_data':meta_data}
 
 
-wrapper_dict = {'naive':naive_collator,'hierarchial':hier_collator,'graph':hier_collator}
+wrapper_dict = {'naive':naive_collator,'hierarchial':hier_collator,'graph':graph_collator}
 
 def create_data_loader(ds,args, batch_size=8,drop_last=True):
     def collate_wrapper(batch):
@@ -357,13 +407,13 @@ def create_data_loader(ds,args, batch_size=8,drop_last=True):
     return DataLoader(
         ds,
         batch_size=batch_size,
-        num_workers=1,
+        num_workers=8,
         shuffle=True,
         drop_last = drop_last,
         collate_fn=collate_wrapper
     )
 
-def get_data_loaders(A,label2id,id2label,tokenizer,args):
+def get_data_loaders(A,label2id,id2label,tokenizer,args,train_limit=None,eval_limit=None):
     print('Loading Data')
     tds=[]
     eds=[]
@@ -375,6 +425,8 @@ def get_data_loaders(A,label2id,id2label,tokenizer,args):
 
     train_dataset = torch.utils.data.ConcatDataset(tds)
     eval_dataset = torch.utils.data.ConcatDataset(eds)
+    if train_limit: train_dataset = Subset(train_dataset,[i for i in range(train_limit)])
+    if eval_limit: eval_dataset = Subset(eval_dataset,[i for i in range(eval_limit)])
     training_loader = create_data_loader(train_dataset,args,batch_size=args.batch_size)
     eval_loader = create_data_loader(eval_dataset,args, batch_size=args.eval_batch_size)
     print('Length of train split ',len(train_dataset))
