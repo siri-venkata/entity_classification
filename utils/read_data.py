@@ -356,7 +356,8 @@ def hier_collator(batch,args):
     # lang = torch.stack([i['lang'] for i in batch])
     meta_data = torch.LongTensor([[i['example_id'],i['lang']] for i in batch])
     return {"input_ids":model_inputs,"labels":labels,'attention_mask':inner_attention_mask,
-            'outer_attention_mask':outer_attention_mask,'nchunks':nchunks,
+            'outer_attention_mask':outer_attention_mask,
+            'nchunks':torch.LongTensor(nchunks),
             'meta_data':meta_data}
 
 
@@ -395,7 +396,7 @@ def graph_collator(batch,args):
     # lang = torch.stack([i['lang'] for i in batch])
     meta_data = torch.LongTensor([[i['example_id'],i['lang']] for i in batch])
     return {"input_ids":model_inputs,"labels":labels,'attention_mask':inner_attention_mask,
-            'nchunks':nchunks,
+            'nchunks':torch.LongTensor(nchunks),
             'meta_data':meta_data}
 
 

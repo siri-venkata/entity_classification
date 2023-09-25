@@ -67,9 +67,7 @@ ctime=time.time()
 
 
 
-def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,args):
-    print('Evaluating')
-    ctime=time.time()
+def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,args):
     evaluation_loss = Lossaggregator(batch_size=args.eval_batch_size)
     with torch.no_grad():
         eval_steps=0
@@ -90,9 +88,8 @@ def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,args):
     #print('Evaluation Loss: ',evaluation_loss.get())
     #print('Evaluation Metrics: ',eval_metric.get())
     eval_metric.save_predictions(eval=True)
-    print(f'Evaluating took {(time.time()-ctime)/60} minutes')
-    wandb.log({"Eval loss": evaluation_loss.get()})
-    wandb.log({"Eval "+met:val for met,val in eval_metric.get().items()})
+    wandb.log({"Eval/loss": evaluation_loss.get()},step=step_number)
+    wandb.log({"Eval/"+met:val for met,val in eval_metric.get(True).items()},step=step_number)
     evaluation_loss.reset()
     eval_metric.reset()
 
@@ -137,6 +134,7 @@ def train(model,
           args):
     print('Training')
     step_number = 0
+    last_train_log =-1
     best_loss = 1_000_000_000
     while step_number==0 or step_number<args.train_steps:
         for i in range(args.num_train_epochs):
@@ -159,13 +157,17 @@ def train(model,
                 if step_number%args.logging_steps==0 and step_number!=0:
                     # print('Loss: ',training_loss.get())
                     # print('Metrics: ',training_metric.get())
-                    wandb.log({"Training loss": training_loss.get()})
-                    wandb.log({"Training "+met:val for met,val in training_metric.get().items()})
+                    wandb.log({'epoch':i},step=step_number)
+                    wandb.log({"Train/loss": training_loss.get()},step=step_number)
+                    wandb.log({"Train/"+met:val for met,val in training_metric.get().items()},step=step_number)
+                    last_train_log = step_number
 
                 if step_number%args.saving_steps==0 and step_number!=0 and training_loss.get()<best_loss:
                     best_loss = training_loss.get()
-                    save_checkpoint(model,optimizer,scheduler,True,step_number,args)
-                    training_metric.save_predictions(False)
+                    if args.save_model:
+                        save_checkpoint(model,optimizer,scheduler,True,step_number,args)
+                    if args.save_results:
+                        training_metric.save_predictions(False)
                     
 
                 loss.backward()
@@ -174,31 +176,47 @@ def train(model,
                 if step_number%args.gradient_accumulation_steps==0 and step_number!=0:
                     optimizer.step()
                     scheduler.step()
+                    wandb.log({'LR':scheduler.get_last_lr()[0]},step=step_number)
                     optimizer.zero_grad()
 
                 if (not skip_eval) and (step_number%args.eval_num_steps==0) and step_number!=0:
+                    if last_train_log!=step_number:
+                        wandb.log({'epoch':i},step=step_number)
+                        wandb.log({"Train/loss": training_loss.get()},step=step_number)
+                        wandb.log({"Train/"+met:val for met,val in training_metric.get(True).items()},step=step_number)
+                        last_train_log=step_number
+                    else:
+                        wandb.log({"Train/"+met:val for met,val in training_metric.get(True).items()  if met in {'roc_auc','prc_auc'}},step=step_number)
                     model.eval()
-                    evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,args)
+                    evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,args)
                     model.train()
 
                 step_number+=1
                 if step_number>=args.train_steps:
-                    print('Exiting epoch loop')
+                    print('Exiting Current Epoch')
                     break
-            training_loss.reset()
-            training_metric.reset()
-            save_checkpoint(model,optimizer,scheduler,False,step_number,args)
             if step_number>=args.train_steps:
-                print('Exiting Training loop')
+                print('Exiting epoch loop')
                 break
+
+            training_loss.reset()
+            if args.save_results:
+                training_metric.save_predictions(False)
+            training_metric.reset()
+            if args.save_model:
+                save_checkpoint(model,optimizer,scheduler,False,step_number,args)
+
+        if step_number>=args.train_steps or args.train_steps==1_000_000_000:
+            print('Exiting Training loop')
+            break
 
 
 if __name__=="__main__":
     if args.do_train or args.do_eval:
         training_loader,train_size,eval_loader,eval_size = get_data_loaders(A,label2id,id2label,tokenizer,args)
         M= torch.from_numpy(A).float()
-        training_metric = Metricsaggregator(M,id2label,args)
-        eval_metric = Metricsaggregator(M,id2label,args)
+        training_metric = Metricsaggregator(M,id2label,'train',args)
+        eval_metric = Metricsaggregator(M,id2label,'eval',args)
         optimizer,scheduler = get_optimizer_and_scheduler(model,train_size,args)
         loss_fn = loss_functions[args.loss_type]
         M = M.to(device)

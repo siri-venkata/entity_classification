@@ -6,30 +6,41 @@ import traceback
 from tqdm import tqdm
 from utils.utils import flatten_list
 
+class HF1Computer():
+    def __init__(self):
+        self.TP = 0
+        self.prediction_count = 0
+        self.label_count = 0
+    
+    def update_counts(self,predictions,labels):
+        self.TP+=len(set(predictions).intersection(set(labels)))
+        self.prediction_count+=len(set(predictions))
+        self.label_count+=len(set(labels))
 
-def hierarchial_precision_(predictions,labels,):
-    return len(set(predictions).intersection(set(labels)))/len(set(predictions)) if len(set(predictions))>0 else 0       
+    def add(self,predictions,labels):
+        for prediction,label in zip(predictions,labels): self.update_counts(prediction,label)
+
+    def reset(self):
+        self.TP = 0
+        self.prediction_count = 0
+        self.label_count = 0
+
+    def hierarchial_precision_(self):
+        return self.TP/self.prediction_count if self.prediction_count>0 else 0
 
 
-def hierarchial_recall_(predictions,labels,):
-    return len(set(predictions).intersection(set(labels)))/len(set(labels)) if len(set(labels))>0 else 0
+    def hierarchial_recall_(self):
+        return self.TP/self.label_count if self.label_count>0 else 0
 
-def hierarchial_f1(predictions,labels,):
-    p_num,r_num=0,0
-    p_denom,r_denom=0,0
-    for prediction,label in zip(predictions,labels):
-        predictions = set(prediction)
-        labels = set(label)
-        p_num+=len(predictions.intersection(labels))
-        p_denom+=len(predictions)
-        r_num+=len(predictions.intersection(labels))
-        r_denom+=len(labels)
-    HP = p_num/p_denom if p_denom>0 else 0
-    HR = r_num/r_denom if r_denom>0 else 0
-    HF1 = 2*HP*HR/(HP+HR) if HP+HR>0 else 0
+    def hierarchial_f1(self):
+            
+        HP = self.hierarchial_precision_()
+        HR = self.hierarchial_recall_()
+        HF1 = 2*HP*HR/(HP+HR) if HP+HR>0 else 0
 
-    return {'HP':HP,'HR':HR,'HF1':HF1}  
-    _
+
+        return {'HP':HP,'HR':HR,'HF1':HF1}  
+    
 
 
 def tune_threshold(probs,truth):
@@ -78,7 +89,7 @@ def one_hot_decode(labels,A):
 
 
 class Metricsaggregator():
-    def __init__(self,A,id2label,args,apply_sigmoid=True,threshold=0.5):
+    def __init__(self,A,id2label,name,args,apply_sigmoid=True,threshold=0.5):
         self.predictions = []
         self.labels=[]
         self.meta_data=[]
@@ -87,6 +98,10 @@ class Metricsaggregator():
         self.id2label = id2label
         self.apply_sigmoid=apply_sigmoid
         self.threshold = threshold
+        self.HF1 = HF1Computer()
+        self.pointer = 0
+        self.name = name
+
 
     def add(self,predictions,labels,meta_data):
         self.predictions.append(predictions.detach().cpu())
@@ -97,30 +112,50 @@ class Metricsaggregator():
         self.predictions = []
         self.labels = []
         self.meta_data = []
+        self.pointer = 0
+        self.HF1.reset()
 
-    def get_comparables(self,meta_filter=None):
-        probs = torch.sigmoid(torch.cat(self.predictions)) if self.apply_sigmoid else torch.cat(self.predictions)
-        y_true = torch.cat(self.labels)
-        meta_data=torch.cat(self.meta_data)
+    def get_comparables(self,return_all = False, meta_filter=None):
+
+        if return_all:
+            probs = torch.sigmoid(torch.cat(self.predictions)) if self.apply_sigmoid else torch.cat(self.predictions)
+            y_true = torch.cat(self.labels)
+            meta_data=torch.cat(self.meta_data)
+        else:
+            try:
+                pointer = self.pointer
+                probs = torch.sigmoid(torch.cat(self.predictions[pointer:])) if self.apply_sigmoid else torch.cat(self.predictions[pointer:])
+                y_true = torch.cat(self.labels[pointer:])
+                meta_data=torch.cat(self.meta_data[pointer:])
+                self.pointer = len(self.predictions)
+            except:
+                return None,None,None,None
         #self.threshold = tune_threshold(probs,y_true)
         y_pred = torch.zeros(probs.shape)
         y_pred[torch.where(probs >= self.threshold)] = 1
+
+        
+
         return y_pred,probs,y_true,meta_data
             
-    def get(self):
+    def get(self,recompute_auc=False):
         try:
-            y_pred,probs,y_true,meta_data = self.get_comparables()
-            roc_auc = roc_auc_score(y_true, probs, average = 'micro')
-            prc_auc = average_precision_score(y_true, probs, average = 'micro')
-            metrics = multi_label_metrics(y_pred,y_true)
-            metrics['roc_auc'] = roc_auc
-            metrics['prc_auc'] = prc_auc
             
-            op,ot = one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)
-            metrics2 = hierarchial_f1(op,ot)
-
-            metrics.update(metrics2)
-            return metrics
+            y_pred,probs,y_true,meta_data = self.get_comparables()
+            if y_pred is not None:
+                op,ot = one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)
+                self.HF1.add(op,ot)
+            metrics2 = self.HF1.hierarchial_f1()
+            
+            if recompute_auc:
+                y_pred,probs,y_true,meta_data = self.get_comparables(True)
+                roc_auc = roc_auc_score(y_true, probs, average = 'micro')
+                prc_auc = average_precision_score(y_true, probs, average = 'micro')
+                metrics={'roc_auc':roc_auc,'prc_auc':prc_auc}
+                metrics.update(metrics2)
+                return metrics
+            else:      
+                return metrics2
         except Exception as e:
             traceback.print_exception(type(e), e, e.__traceback__)
             import pdb;pdb.set_trace()
@@ -129,7 +164,7 @@ class Metricsaggregator():
         def verbalize_labels(labels):
             return [[self.id2label[j] for j in i] for i in labels]
         import json
-        y_pred,probs,y_true,meta_data = self.get_comparables()
+        y_pred,probs,y_true,meta_data = self.get_comparables(True)
         
         readable_predictions = [one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)]
         readable_predictions = list(map(verbalize_labels,readable_predictions))

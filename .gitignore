@@ -172,3 +172,8 @@ mbert_flat/
 output/
 labels/
 config/
+deepspeed-main.py
+main_single_batch.py
+main_logging_test.py
+
+
