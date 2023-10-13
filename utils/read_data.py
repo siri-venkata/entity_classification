@@ -104,7 +104,7 @@ def get_label_maps(args):
 
     R,D = get_risk_severity(args,label2id)
     
-    return A,M,R,D,labels,label2id,id2label,num_labels 
+    return A,M,R,D,labels,label2id,id2label,num_labels
 
 def verify_if_DAG(A):
     import networkx as nx
@@ -131,6 +131,18 @@ class MissingDataError(Exception):
 
     def __str__(self):
         return 'Some data is missing' if self.message is None else 'Follwoing data is missing: '+self.message
+    
+def get_predict_data(args):
+    all_lang_articles = read_json(args.predict_file)
+    data = []
+    inex=0
+    for lang in all_lang_articles:
+        articles = all_lang_articles[lang]
+        for title,content in articles.items():
+            data.append([index,lang,title,content,0])
+            index+=1
+    return data
+            
 
 def get_data(args,articles_path='',lang='en',load_label=True):
     #Load lang_title_articles
@@ -193,8 +205,8 @@ def get_data(args,articles_path='',lang='en',load_label=True):
 
 def load_label_graph(A,id2label,args):
     if args.init_label_nodes=='mbert':
-        model = load_base_model(AttrDict({"model_name":'bert-base-multilingual-cased','model_path':''}))
-        tokenizer = load_tokenizer(AttrDict({"model_name":'bert-base-multilingual-cased','model_path':''}),use_fast=False)
+        model = load_base_model(AttrDict({"model_name":args.model_name,'model_path':''}))
+        tokenizer = load_tokenizer(AttrDict({"model_name":args.model_name,'model_path':''}),use_fast=False)
         labels = [[i,v] for i,v in id2label.items()]
         label_texts = [v for i,v in id2label.items()]
         label_texts = [i.replace('.txt','') for i in label_texts]
@@ -414,7 +426,7 @@ def create_data_loader(ds,args, batch_size=8,drop_last=True):
         collate_fn=collate_wrapper
     )
 
-def get_data_loaders(A,label2id,id2label,tokenizer,args,train_limit=None,eval_limit=None):
+def get_data_loaders(A,label2id,id2label,tokenizer,args):
     print('Loading Data')
     tds=[]
     eds=[]
@@ -426,19 +438,19 @@ def get_data_loaders(A,label2id,id2label,tokenizer,args,train_limit=None,eval_li
 
     train_dataset = torch.utils.data.ConcatDataset(tds)
     eval_dataset = torch.utils.data.ConcatDataset(eds)
-    if train_limit: train_dataset = Subset(train_dataset,[i for i in range(train_limit)])
-    if eval_limit: eval_dataset = Subset(eval_dataset,[i for i in range(eval_limit)])
+    if args.limit_train_batches!=-1 : train_dataset = Subset(train_dataset,[i for i in range(args.limit_train_batches )])
+    if args.limit_eval_batches!=-1: eval_dataset = Subset(eval_dataset,[i for i in range(args.limit_eval_batches )])
     training_loader = create_data_loader(train_dataset,args,batch_size=args.batch_size)
     eval_loader = create_data_loader(eval_dataset,args, batch_size=args.eval_batch_size)
     print('Length of train split ',len(train_dataset))
     print('Length of test  split ',len(eval_dataset))
-    return training_loader,len(train_dataset),eval_loader,len(eval_dataset)
+    return training_loader,len(train_dataset)//args.batch_size,eval_loader,len(eval_dataset)//args.batch_size
 
 
 def predict_data_loader(A,label2id,id2label,tokenizer,args):
-    predict_data = get_data('en',args,load_label=False)
-    predict_dataset = EntityDataset(args.predict_file, A, label2id, id2label,tokenizer,  max_len=args.max_seq_length,has_label=False)
-    predict_loader = create_data_loader(predict_dataset, batch_size=args.batch_size)
+    predict_data = get_predict_data(args)
+    predict_dataset = EntityDataset(predict_data, A, label2id, id2label,tokenizer,  max_len=args.max_seq_length,has_label=False)
+    predict_loader = create_data_loader(predict_dataset,args, batch_size=args.batch_size)
     return predict_loader,len(predict_dataset)
 
 

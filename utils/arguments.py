@@ -9,7 +9,7 @@ available_languages = "aswiki|bnwiki|guwiki|hiwiki|knwiki|mlwiki|mrwiki|orwiki|p
 available_losses = ['mc', 'bce','cbc','rac','dac','radac']
 
 #List of available models
-available_backbone_models =['bert-base-multilingual-cased']
+available_backbone_models =['bert-base-multilingual-cased','xlm-roberta-base']
 
 #List of aviailable models
 available_models = ['naive','hierarchial','graph']
@@ -37,6 +37,9 @@ def parse_arguments():
     parser.add_argument('--saving_steps', type=int, default=10000, help='Save steps')
     parser.add_argument('--save_results', action='store_true', help='Save results')#TODO: Add save results support
     parser.add_argument('--save_model', action='store_true', help='Save model')#TODO: Add save model support
+
+    parser.add_argument('--limit_train_batches', type=int, default=-1, help='Limit train batches')
+    parser.add_argument('--limit_eval_batches', type=int, default=-1, help='Limit val batches')
 
     # Evaulate Configuration
     parser.add_argument('--train_test_split', type=float, default=0.8, help='Train test split')
@@ -122,7 +125,9 @@ def get_args():
         assert  args.eval_batch_size == 1, "Batch size should be 1 for graph model"
 
     if torch.cuda.device_count()>0:
+        print('Batch size initially is ',args.batch_size)
         args.batch_size = args.batch_size*torch.cuda.device_count()
+        print('Batch size is set to ',args.batch_size,torch.cuda.device_count())
 
     print('Arguments: ')
     pprint(vars(args))

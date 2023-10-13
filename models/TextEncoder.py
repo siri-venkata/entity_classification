@@ -30,15 +30,12 @@ class TextEncoder(nn.Module):
 
     def forward(self, **inputs):
         B,N,L = inputs['input_ids'].shape
-        try:
-            input_ids = inputs['input_ids'].reshape(B*N,-1)
-            attention_mask = inputs['attention_mask'].reshape(B*N,-1)
-            outputs = self.model(input_ids=input_ids,attention_mask=attention_mask)
-            po =  outputs.pooler_output.reshape(B,N,-1)
-            pemb = self.positional_encoding(po[0]).repeat(B,1,1)
-            return po+pemb
-        except:
-            import pdb;pdb.set_trace()
+        input_ids = inputs['input_ids'].reshape(B*N,-1)
+        attention_mask = inputs['attention_mask'].reshape(B*N,-1)
+        outputs = self.model(input_ids=input_ids,attention_mask=attention_mask)
+        po =  outputs.pooler_output.reshape(B,N,-1)
+        pemb = self.positional_encoding(po[0]).repeat(B,1,1)
+        return po+pemb
 
 
     # def forward(self, input_ids):

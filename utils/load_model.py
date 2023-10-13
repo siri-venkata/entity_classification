@@ -36,9 +36,9 @@ def save_checkpoint(model,optimizer,scheduler, is_best, step_number,args):
     torch.save(scheduler.state_dict(),spath)
 
     if is_best:
-        shutil.copyfile(mpath,'/'.join(mpath.split('/')[:-1])+'/best/model.pt')
-        shutil.copyfile(opath,'/'.join(opath.split('/')[:-1])+'/best/optimizer.pt')
-        shutil.copyfile(spath,'/'.join(spath.split('/')[:-1])+'/best/scheduler.pt')
+        shutil.copyfile(mpath,'/'.join(mpath.split('/')[:-1])+'/best/model_'+str(step_number)+'.pt')
+        shutil.copyfile(opath,'/'.join(opath.split('/')[:-1])+'/best/optimizer_'+str(step_number)+'.pt')
+        shutil.copyfile(spath,'/'.join(spath.split('/')[:-1])+'/best/scheduler_'+str(step_number)+'.pt')
         os.remove(mpath)
         os.remove(opath)
         os.remove(spath)

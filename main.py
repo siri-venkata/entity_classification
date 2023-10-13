@@ -2,6 +2,7 @@ import time
 ctime = time.time()
 print('Started imports ')
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import json
 import wandb
 
@@ -55,6 +56,15 @@ print('Loading Model and Tokenizer')
 tokenizer = load_tokenizer(args)
 args.pad_token_id = tokenizer.pad_token_id
 model = model_loader_dict[args.model_type](label_graph,args)
+
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+untrainable_params = total_params - trainable_params
+
+print(f"Total parameters: {total_params}")
+print(f"Trainable parameters: {trainable_params}")
+print(f"Untrainable parameters: {untrainable_params}")
+
 if torch.cuda.device_count() > 1:
   print("Let's use", torch.cuda.device_count(), "GPUs!")
   model = torch.nn.DataParallel(model)
@@ -67,7 +77,7 @@ ctime=time.time()
 
 
 
-def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,args):
+def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,best_loss,args):
     evaluation_loss = Lossaggregator(batch_size=args.eval_batch_size)
     with torch.no_grad():
         eval_steps=0
@@ -87,12 +97,14 @@ def evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,
             
     #print('Evaluation Loss: ',evaluation_loss.get())
     #print('Evaluation Metrics: ',eval_metric.get())
-    eval_metric.save_predictions(eval=True)
-    wandb.log({"Eval/loss": evaluation_loss.get()},step=step_number)
+    val_loss = evaluation_loss.get()
+    wandb.log({"Eval/loss": val_loss},step=step_number)
     wandb.log({"Eval/"+met:val for met,val in eval_metric.get(True).items()},step=step_number)
+    if args.save_results:
+        eval_metric.save_predictions(eval=True,name='last' if val_loss>=best_loss else 'best')
     evaluation_loss.reset()
     eval_metric.reset()
-
+    return val_loss
 
 
 def predict(model,
@@ -133,6 +145,7 @@ def train(model,
           device,
           args):
     print('Training')
+    wandb.watch(model)
     step_number = 0
     last_train_log =-1
     best_loss = 1_000_000_000
@@ -141,7 +154,7 @@ def train(model,
             print('Epoch: ',i)
             training_loss = Lossaggregator(batch_size=args.batch_size)
             
-            for index,batch in tqdm(enumerate(training_loader),total = train_size//args.batch_size):
+            for index,batch in tqdm(enumerate(training_loader),total = train_size):
                 input_ids = batch['input_ids'].to(device)#.reshape(args.batch_size,-1).to(device)
                 attention_mask = batch['attention_mask'].to(device)#.reshape(args.batch_size,-1).to(device)
                 labels = batch['labels'].to(device)#.reshape(args.batch_size,-1).to(device)
@@ -155,19 +168,12 @@ def train(model,
                 training_loss.add(loss.item())
 
                 if step_number%args.logging_steps==0 and step_number!=0:
-                    # print('Loss: ',training_loss.get())
-                    # print('Metrics: ',training_metric.get())
                     wandb.log({'epoch':i},step=step_number)
+                    wandb.log({'LR':scheduler.get_last_lr()[0]},step=step_number)
                     wandb.log({"Train/loss": training_loss.get()},step=step_number)
                     wandb.log({"Train/"+met:val for met,val in training_metric.get().items()},step=step_number)
                     last_train_log = step_number
 
-                if step_number%args.saving_steps==0 and step_number!=0 and training_loss.get()<best_loss:
-                    best_loss = training_loss.get()
-                    if args.save_model:
-                        save_checkpoint(model,optimizer,scheduler,True,step_number,args)
-                    if args.save_results:
-                        training_metric.save_predictions(False)
                     
 
                 loss.backward()
@@ -176,21 +182,22 @@ def train(model,
                 if step_number%args.gradient_accumulation_steps==0 and step_number!=0:
                     optimizer.step()
                     scheduler.step()
-                    wandb.log({'LR':scheduler.get_last_lr()[0]},step=step_number)
                     optimizer.zero_grad()
 
                 if (not skip_eval) and (step_number%args.eval_num_steps==0) and step_number!=0:
                     if last_train_log!=step_number:
                         wandb.log({'epoch':i},step=step_number)
+                        wandb.log({'LR':scheduler.get_last_lr()[0]},step=step_number)
                         wandb.log({"Train/loss": training_loss.get()},step=step_number)
                         wandb.log({"Train/"+met:val for met,val in training_metric.get(True).items()},step=step_number)
                         last_train_log=step_number
-                    else:
-                        wandb.log({"Train/"+met:val for met,val in training_metric.get(True).items()  if met in {'roc_auc','prc_auc'}},step=step_number)
                     model.eval()
-                    evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,args)
+                    val_loss = evaluate(model,eval_loader,eval_metric,eval_size,loss_fn,device,step_number,best_loss,args)
+                    if val_loss<best_loss:
+                        val_loss = best_loss
+                        if args.save_model:
+                            save_checkpoint(model,optimizer,scheduler,True,'best',args)
                     model.train()
-
                 step_number+=1
                 if step_number>=args.train_steps:
                     print('Exiting Current Epoch')
@@ -204,7 +211,7 @@ def train(model,
                 training_metric.save_predictions(False)
             training_metric.reset()
             if args.save_model:
-                save_checkpoint(model,optimizer,scheduler,False,step_number,args)
+                save_checkpoint(model,optimizer,scheduler,False,'last',args)
 
         if step_number>=args.train_steps or args.train_steps==1_000_000_000:
             print('Exiting Training loop')

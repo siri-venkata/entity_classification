@@ -38,7 +38,8 @@ class HF1Computer():
         HR = self.hierarchial_recall_()
         HF1 = 2*HP*HR/(HP+HR) if HP+HR>0 else 0
 
-
+        if self.label_count==0:
+            raise ValueError('Calculated metrics after providing results atleast once')
         return {'HP':HP,'HR':HR,'HF1':HF1}  
     
 
@@ -141,26 +142,30 @@ class Metricsaggregator():
     def get(self,recompute_auc=False):
         try:
             
-            y_pred,probs,y_true,meta_data = self.get_comparables()
-            if y_pred is not None:
-                op,ot = one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)
-                self.HF1.add(op,ot)
-            metrics2 = self.HF1.hierarchial_f1()
-            
             if recompute_auc:
                 y_pred,probs,y_true,meta_data = self.get_comparables(True)
                 roc_auc = roc_auc_score(y_true, probs, average = 'micro')
                 prc_auc = average_precision_score(y_true, probs, average = 'micro')
                 metrics={'roc_auc':roc_auc,'prc_auc':prc_auc}
+                y_pred,probs,y_true,meta_data = self.get_comparables()
+                if y_pred is not None:
+                    op,ot = one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)
+                    self.HF1.add(op,ot)
+                metrics2 = self.HF1.hierarchial_f1()
                 metrics.update(metrics2)
                 return metrics
             else:      
+                y_pred,probs,y_true,meta_data = self.get_comparables()
+                if y_pred is not None:
+                    op,ot = one_hot_decode(y_pred,self.A),one_hot_decode(y_true,self.A)
+                    self.HF1.add(op,ot)
+                metrics2 = self.HF1.hierarchial_f1()
                 return metrics2
         except Exception as e:
-            traceback.print_exception(type(e), e, e.__traceback__)
-            import pdb;pdb.set_trace()
+            import pdb;pdb.set_trace();
+            raise ValueError('Error in metric calculation ')
     
-    def save_predictions(self,eval=False):
+    def save_predictions(self,eval=False,name=''):
         def verbalize_labels(labels):
             return [[self.id2label[j] for j in i] for i in labels]
         import json
@@ -172,14 +177,15 @@ class Metricsaggregator():
         readable_predictions[2] = [i[0] for i in meta_data]
         readable_predictions[3] = [i[1] for i in meta_data]
 
-        final_data = [[id,lang,"_|_".join(predictions),"_|_".join(labels)] for predictions,labels,id,lang in zip(*readable_predictions)]
+        # final_data = [[int(id),int(lang),"_|_".join(predictions),"_|_".join(labels)] for predictions,labels,id,lang in zip(*readable_predictions)]
+        final_data = [[int(id),int(lang),predictions,labels] for predictions,labels,id,lang in zip(*readable_predictions)]
         final_data =[["id","lang","predictions","ground truth"]] + final_data
 
 
         split = 'train' if not eval else 'eval'
-        with open(self.args.save_model_path+'/best/predictions'+split+'.json','w') as f:
+        with open(self.args.save_model_path+'/predictions'+split+name+'.json','w') as f:
             json.dump(y_pred.detach().tolist(),f)
-        with open(self.args.save_model_path+'/best/predictions'+split+'.csv','w',newline='') as f:
+        with open(self.args.save_model_path+'/predictions'+split+str(name)+'.csv','w',newline='') as f:
             writer = csv.writer(f)
             writer.writerows(final_data)
 

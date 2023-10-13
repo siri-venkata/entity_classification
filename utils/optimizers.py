@@ -24,7 +24,15 @@ def get_optimizer_and_scheduler(model,train_size,args):
                                                                                                  args.correct_bias,
                                                                                                    args.train_steps,
                                                                                                      args.warmup_portion]
+    if total_steps == 1_000_000_000:
+        total_steps = int(train_size*args.num_train_epochs)
+
+    total_steps = int(total_steps//args.gradient_accumulation_steps)
+
     warmup_steps = int(total_steps * warmup_portion)
+    print('LR Warmup steps: ',warmup_steps)
+    print('Total steps: ',total_steps)
+
     param_optimizer = list(model.named_parameters())
 
     # Separate parameters for weight decay and no weight decay
@@ -46,7 +54,7 @@ def get_optimizer_and_scheduler(model,train_size,args):
         except:
             print('No optimizer checkpoint found. Initializing optimizer from scratch.')
     # Create the linear learning rate scheduler with warmup
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=min(warmup_steps,int(0.1*train_size)), num_training_steps=min(total_steps,train_size*args.num_train_epochs))
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
     if args.model_path:
         try:
             checkpoint = torch.load(args.mode_path+'/scheduler.pt')
